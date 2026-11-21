@@ -94,3 +94,9 @@ description = "Run Trivy on the file system"
 run = """
 trivy fs .
 """
+
+[tasks.secrets]
+description = "Generate and apply install-time Kubernetes Secret for Gitea"
+run = """
+./scripts/create-secrets.sh
+"""
