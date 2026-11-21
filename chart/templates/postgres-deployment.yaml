@@ -1,0 +1,90 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.postgres.name }}
+  labels:
+    {{- include "lab-gitea.labels" . | nindent 4 }}
+    {{- include "lab-gitea.postgres.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate is required for ReadWriteOnce Longhorn PVCs to avoid Multi-Attach deadlocks
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lab-gitea.postgres.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lab-gitea.labels" . | nindent 8 }}
+        {{- include "lab-gitea.postgres.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.postgres.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.postgres.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.postgres.name }}-data
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgres.image }}:{{ .Values.postgres.tag }}"
+          imagePullPolicy: {{ .Values.postgres.pullPolicy }}
+          {{- with .Values.postgres.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.postgres.port }}
+              name: postgres
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.db | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret | quote }}
+                  key: {{ .Values.secretKeys.dbPassword | quote }}
+          volumeMounts:
+            # joeckr/oci-postgres stores PGDATA in /tmp/data under group 0 permissions
+            - name: postgres-data
+              mountPath: /tmp
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.user | quote }}
+                - -d
+                - {{ .Values.postgres.db | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.user | quote }}
+                - -d
+                - {{ .Values.postgres.db | quote }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with .Values.postgres.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

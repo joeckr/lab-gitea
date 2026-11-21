@@ -4,10 +4,19 @@ kind: Ingress
 metadata:
   name: {{ .Values.ingress.name }}
   labels:
-    app: {{ .Values.app.name }}
+    {{- include "lab-gitea.labels" . | nindent 4 }}
+    {{- include "lab-gitea.gitea.selectorLabels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
     - host: {{ .Values.ingress.host }}
@@ -17,7 +26,7 @@ spec:
             pathType: {{ .Values.ingress.pathType }}
             backend:
               service:
-                name: {{ .Values.service.name }}
+                name: {{ .Values.gitea.name }}
                 port:
-                  number: {{ .Values.service.port }}
+                  number: {{ .Values.gitea.httpPort }}
 {{- end }}

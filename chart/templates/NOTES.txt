@@ -1,0 +1,20 @@
+Gitea has been deployed to namespace '{{ .Release.Namespace }}'.
+
+1. Verify pods and Longhorn PVCs:
+   kubectl -n {{ .Release.Namespace }} get pods,pvc
+
+2. Check Gateway API HTTPRoute status:
+   {{- if .Values.gateway.enabled }}
+   kubectl -n {{ .Release.Namespace }} get httproute {{ .Values.gateway.name }} -o wide
+   URL: {{ .Values.gitea.rootUrl }}
+   {{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Values.gitea.name }} 3000:{{ .Values.gitea.httpPort }}
+   {{- end }}
+
+3. Verify OIDC authentication source:
+   kubectl -n {{ .Release.Namespace }} exec deploy/{{ .Values.gitea.name }} -- \
+     gitea --config /etc/gitea/app.ini admin auth list
+
+4. Ensure the Kubernetes Secret '{{ .Values.existingSecret }}' exists in namespace '{{ .Release.Namespace }}'.
+   If not yet created, run:
+   ./scripts/create-secrets.sh --namespace {{ .Release.Namespace }} --secret-name {{ .Values.existingSecret }}
