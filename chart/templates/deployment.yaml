@@ -1,43 +1,165 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Values.app.name }}
+  name: {{ .Values.gitea.name }}
   labels:
-    app: {{ .Values.app.name }}
+    {{- include "lab-gitea.labels" . | nindent 4 }}
+    {{- include "lab-gitea.gitea.selectorLabels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.app.replicaCount }}
+  replicas: {{ .Values.gitea.replicaCount }}
+  # Recreate is required for ReadWriteOnce Longhorn PVCs to avoid Multi-Attach deadlocks
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: {{ .Values.app.name }}
+      {{- include "lab-gitea.gitea.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ .Values.app.name }}
+        {{- include "lab-gitea.labels" . | nindent 8 }}
+        {{- include "lab-gitea.gitea.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/init-config: {{ include (print $.Template.BasePath "/gitea-configmap.yaml") . | sha256sum }}
     spec:
-      {{- with .Values.app.podSecurityContext }}
+      {{- with .Values.gitea.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.app.tolerations }}
+      {{- with .Values.gitea.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       automountServiceAccountToken: false
+      volumes:
+        - name: gitea-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.gitea.name }}-data
+        - name: gitea-init
+          configMap:
+            name: {{ .Values.gitea.name }}-init
+            defaultMode: 0555
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.postgres.image }}:{{ .Values.postgres.tag }}"
+          imagePullPolicy: {{ .Values.postgres.pullPolicy }}
+          {{- with .Values.gitea.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}"; do
+                echo "Waiting for PostgreSQL at ${DB_HOST}:${DB_PORT}..."
+                sleep 2
+              done
+          env:
+            - name: DB_HOST
+              value: {{ include "lab-gitea.dbHostOnly" . | quote }}
+            - name: DB_PORT
+              value: {{ include "lab-gitea.dbPort" . | quote }}
+            - name: DB_USER
+              value: {{ include "lab-gitea.dbUser" . | quote }}
+        - name: configure-gitea
+          image: "{{ .Values.gitea.image }}:{{ .Values.gitea.tag }}"
+          imagePullPolicy: {{ .Values.gitea.pullPolicy }}
+          {{- with .Values.gitea.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/sh
+            - /scripts/init-gitea.sh
+          env:
+            {{- include "lab-gitea.gitea.env" . | nindent 12 }}
+            {{- if .Values.oidc.enabled }}
+            - name: OIDC_NAME
+              value: {{ .Values.oidc.name | quote }}
+            - name: OIDC_AUTO_DISCOVER_URL
+              value: {{ .Values.oidc.autoDiscoverUrl | quote }}
+            - name: OIDC_SCOPES
+              value: {{ .Values.oidc.scopes | quote }}
+            - name: OIDC_GROUP_CLAIM_NAME
+              value: {{ .Values.oidc.groupClaimName | quote }}
+            - name: OIDC_ADMIN_GROUP
+              value: {{ .Values.oidc.adminGroup | quote }}
+            - name: OIDC_RESTRICTED_GROUP
+              value: {{ .Values.oidc.restrictedGroup | quote }}
+            - name: OIDC_SKIP_LOCAL_2FA
+              value: {{ .Values.oidc.skipLocal2fa | quote }}
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret | quote }}
+                  key: {{ .Values.secretKeys.oidcClientId | quote }}
+                  optional: {{ empty .Values.oidc.autoDiscoverUrl }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret | quote }}
+                  key: {{ .Values.secretKeys.oidcClientSecret | quote }}
+                  optional: {{ empty .Values.oidc.autoDiscoverUrl }}
+            {{- end }}
+          volumeMounts:
+            - name: gitea-data
+              mountPath: /var/lib/gitea
+              subPath: data
+            - name: gitea-data
+              mountPath: /etc/gitea
+              subPath: config
+            - name: gitea-init
+              mountPath: /scripts
+              readOnly: true
       containers:
-        - name: {{ .Values.app.name }}
-          image: "{{ .Values.app.image }}:{{ .Values.app.tag }}"
-          imagePullPolicy: {{ .Values.app.pullPolicy }}
-          {{- with .Values.app.securityContext }}
+        - name: {{ .Values.gitea.name }}
+          image: "{{ .Values.gitea.image }}:{{ .Values.gitea.tag }}"
+          imagePullPolicy: {{ .Values.gitea.pullPolicy }}
+          {{- with .Values.gitea.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
-            - containerPort: {{ .Values.app.port }}
-              name: {{ .Values.app.name }}
+            - containerPort: {{ .Values.gitea.httpPort }}
+              name: http
+              protocol: TCP
+            {{- if .Values.gitea.ssh.enabled }}
+            - containerPort: {{ .Values.gitea.ssh.port }}
+              name: ssh
+              protocol: TCP
+            {{- end }}
           env:
-            - name: ENV
-              value: {{ .Values.app.env | quote }}
-          {{- with .Values.app.resources }}
+            {{- include "lab-gitea.gitea.env" . | nindent 12 }}
+          volumeMounts:
+            - name: gitea-data
+              mountPath: /var/lib/gitea
+              subPath: data
+            - name: gitea-data
+              mountPath: /etc/gitea
+              subPath: config
+          startupProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with .Values.gitea.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}

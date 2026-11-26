@@ -1,6 +1,6 @@
 apiVersion: v2
-name: lab-service
-description: Helm chart for experimenting with new services in a lab environment
+name: lab-gitea
+description: Helm chart for Gitea on Talos Linux with restricted PSS, Longhorn, PostgreSQL, Traefik Gateway, and Zitadel OIDC
 type: application
 version: 0.2.1
-appVersion: "0.2.1"
+appVersion: "1.23.7-rootless"

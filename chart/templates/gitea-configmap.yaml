@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.gitea.name }}-init
+  labels:
+    {{- include "lab-gitea.labels" . | nindent 4 }}
+    {{- include "lab-gitea.gitea.selectorLabels" . | nindent 4 }}
+data:
+  init-gitea.sh: |
+    #!/bin/sh
+    set -eu
+
+    echo "[init-gitea] Generating /etc/gitea/app.ini from environment..."
+    environment-to-ini --config /etc/gitea/app.ini
+
+    echo "[init-gitea] Running database migrations..."
+    gitea --config /etc/gitea/app.ini migrate
+
+    {{- if .Values.oidc.enabled }}
+    if [ -n "${OIDC_AUTO_DISCOVER_URL:-}" ]; then
+      echo "[init-gitea] Reconciling OIDC authentication source '${OIDC_NAME}'..."
+
+      # Build optional flags for group mapping and 2FA
+      set -- \
+        --name "${OIDC_NAME}" \
+        --provider "openidConnect" \
+        --key "${OIDC_CLIENT_ID}" \
+        --secret "${OIDC_CLIENT_SECRET}" \
+        --auto-discover-url "${OIDC_AUTO_DISCOVER_URL}" \
+        --scopes "${OIDC_SCOPES}"
+
+      if [ -n "${OIDC_GROUP_CLAIM_NAME:-}" ]; then
+        set -- "$@" --group-claim-name "${OIDC_GROUP_CLAIM_NAME}"
+      fi
+      if [ -n "${OIDC_ADMIN_GROUP:-}" ]; then
+        set -- "$@" --admin-group "${OIDC_ADMIN_GROUP}"
+      fi
+      if [ -n "${OIDC_RESTRICTED_GROUP:-}" ]; then
+        set -- "$@" --restricted-group "${OIDC_RESTRICTED_GROUP}"
+      fi
+      if [ "${OIDC_SKIP_LOCAL_2FA:-false}" = "true" ]; then
+        set -- "$@" --skip-local-2fa
+      fi
+
+      EXISTING_ID=$(gitea --config /etc/gitea/app.ini admin auth list \
+        | awk -F '\t' -v name="${OIDC_NAME}" 'NR>1 && $2 == name { print $1; exit }')
+
+      if [ -n "${EXISTING_ID}" ]; then
+        echo "[init-gitea] Updating existing OIDC source (id=${EXISTING_ID})..."
+        gitea --config /etc/gitea/app.ini admin auth update-oauth --id "${EXISTING_ID}" "$@"
+      else
+        echo "[init-gitea] Creating new OIDC source '${OIDC_NAME}'..."
+        gitea --config /etc/gitea/app.ini admin auth add-oauth "$@"
+      fi
+    else
+      echo "[init-gitea] OIDC enabled, but OIDC_AUTO_DISCOVER_URL is empty; skipping auto-configuration."
+    fi
+    {{- end }}
+
+    echo "[init-gitea] Initialization complete."
